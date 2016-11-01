@@ -1,0 +1,53 @@
+#!/bin/bash
+
+
+# General name for state file
+name=${NAME:-test.local}
+
+die () {
+    echo; echo "ERROR: $1"; echo; exit 1
+}
+
+if [ -z  $AWS_ACCESS_KEY_ID ];          then die "Please specify AWS credentials - AWS_ACCESS_KEY_ID variable empty"; fi
+if [ -z  $AWS_SECRET_ACCESS_KEY ];      then die "Please specify AWS credentials - AWS_SECRET_ACCESS_KEY variable empty"; fi
+if [ -z  $AWS_DEFAULT_REGION ];         then die "Please specify AWS credentials - AWS_DEFAULT_REGION variable empty"; fi
+if [ -z  $AWS_TERRAFORM_STATE_BUCKET ]; then die "Please specify AWS credentials - AWS_TERRAFORM_STATE_BUCKET variable empty"; fi
+
+extraopts=$*
+exitcode=0
+curdir=$(pwd)
+
+# Initialize remote storage for terraform state file
+cd config/
+if [ ! -f .terraform/terraform.tfstate ]
+  then
+    echo "Set Terraform remote S3 state"
+    terraform remote config \
+      -backend=s3 \
+      -backend-config="bucket=$AWS_TERRAFORM_STATE_BUCKET" \
+      -backend-config="region=$AWS_DEFAULT_REGION" \
+      -backend-config="key=${name}-$AWS_DEFAULT_REGION.tfstate"
+    exitcode=$?
+  else
+    echo "Pull Terraform remote S3 state"
+    terraform remote pull
+    exitcode=$?
+fi
+
+if [ $exitcode -ne 0 ]; then die "terraform can't sync remote state"; fi
+
+terraform get ../tf || exitcode=$?
+
+# Destroy infra
+#
+terraform destroy -var "region=\"$AWS_DEFAULT_REGION\"" -var "name=\"$name\"" -force $extraopts ../tf || exitcode=$?
+terraform remote push
+
+if [ $exitcode -ne 0 ]; then die "terraform got error while destroy infra"; fi
+
+# Delete generated config file
+infra=`cat terraform.tfvars | sed '/.*vpc_config_file.*/ ! d; s/.*vpc_config_file.*"\(.*\)"/\1/'`
+[ -f ../$infra ] && rm -f ../$infra
+
+cd $curdir
+echo "Done."
